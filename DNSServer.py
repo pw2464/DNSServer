@@ -77,85 +77,80 @@ dns_records = {
     },
    
     # Add more records as needed (see assignment instructions!
+    },
+    'safebank.com.': {
+        dns.rdatatype.A: '192.168.1.102',
+    },
+    'google.com.': {
+        dns.rdatatype.A: '192.168.1.103',
+    },
+    'legitsite.com.': {
+        dns.rdatatype.A: '192.168.1.104',
+    },
+    'yahoo.com.': {
+        dns.rdatatype.A: '192.168.1.105',
+    },
+    'nyu.edu.': {
+        dns.rdatatype.A: '192.168.1.106',
+        dns.rdatatype.TXT: (str(encrypted_value),),
+        dns.rdatatype.MX: [(10, 'mxa-00256a01.gslb.pphosted.com.')],
+        dns.rdatatype.AAAA: '2001:0db8:85a3:0000:0000:8a2e:0373:7312',
+        dns.rdatatype.NS: 'ns1.nyu.edu.',
+    },
 }
+
 def run_dns_server():
-    # Create a UDP socket and bind it to the local IP address and port 53 (or 5353 for non-root)
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    server_socket.bind(('127.0.0.1', 53))  # change to 5353 if you don't want to use sudo
+    # Create a UDP socket and bind it to the local IP address (what unique IP address is used here, similar to webserver lab) and port (the standard port for DNS)
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # Research this
+    server_socket.bind(('127.0.0.1', 53))
 
     while True:
         try:
-            data, addr = server_socket.recvfrom(4096)
+            # Wait for incoming DNS requests
+            data, addr = server_socket.recvfrom(1024)
+            # Parse the request using the `dns.message.from_wire` method
             request = dns.message.from_wire(data)
+            # Create a response message using the `dns.message.make_response` method
             response = dns.message.make_response(request)
 
-            # Ensure there's a question
-            if not request.question:
-                server_socket.sendto(response.to_wire(), addr)
-                continue
-
+            # Get the question from the request
             question = request.question[0]
-            # normalize qname to a lower-case FQDN with trailing dot
-            qname = question.name.to_text().lower()
+            qname = question.name.to_text()
             qtype = question.rdtype
 
-            # Debug print
-            print("Responding to request:", qname, "type:", dns.rdatatype.to_text(qtype))
-
+            # Check if there is a record in the `dns_records` dictionary that matches the question
             if qname in dns_records and qtype in dns_records[qname]:
+                # Retrieve the data for the record and create an appropriate `rdata` object for it
                 answer_data = dns_records[qname][qtype]
 
-                # Build rrsets robustly using dns.rrset.from_text where possible
+                rdata_list = []
+
                 if qtype == dns.rdatatype.MX:
-                    # MX entries are tuples of (priority, exchange)
-                    for pref, exch in answer_data:
-                        # Construct RRset via from_text - supply "pref exchange" text
-                        rr = dns.rrset.from_text(qname, 300, 'IN', 'MX', f"{pref} {exch}")
-                        response.answer.append(rr)
+                    for pref, server in answer_data:
+                        rdata_list.append(MX(dns.rdataclass.IN, dns.rdatatype.MX, pref, server))
                 elif qtype == dns.rdatatype.SOA:
-                    # SOA stored as tuple: (mname, rname, serial, refresh, retry, expire, minimum)
                     mname, rname, serial, refresh, retry, expire, minimum = answer_data
-                    # Make an SOA rdata text string the way from_text expects: "mname rname serial refresh retry expire minimum"
-                    soa_text = f"{mname} {rname} {serial} {refresh} {retry} {expire} {minimum}"
-                    rr = dns.rrset.from_text(qname, 300, 'IN', 'SOA', soa_text)
-                    response.answer.append(rr)
+                    rdata = SOA(dns.rdataclass.IN, dns.rdatatype.SOA, mname, rname, serial, refresh, retry, expire, minimum)
+                    rdata_list.append(rdata)
                 else:
-                    # answer_data might be a single string or a tuple/list of strings (e.g., TXT)
-                    if isinstance(answer_data, (list, tuple)):
-                        for item in answer_data:
-                            # For TXT records, ensure the string will be quoted correctly by from_text
-                            # from_text will quote automatically for TXT if you pass it a single token,
-                            # but to be safe for spaces we wrap with quotes here:
-                            if qtype == dns.rdatatype.TXT:
-                                # ensure quotes in the text form
-                                text_val = f'"{item}"' if not (item.startswith('"') and item.endswith('"')) else item
-                                rr = dns.rrset.from_text(qname, 300, 'IN', 'TXT', text_val)
-                            else:
-                                rr = dns.rrset.from_text(qname, 300, 'IN', dns.rdatatype.to_text(qtype), item)
-                            response.answer.append(rr)
+                    if isinstance(answer_data, str):
+                        rdata_list = [dns.rdata.from_text(dns.rdataclass.IN, qtype, answer_data)]
                     else:
-                        # single string
-                        if qtype == dns.rdatatype.TXT:
-                            text_val = f'"{answer_data}"' if not (answer_data.startswith('"') and answer_data.endswith('"')) else answer_data
-                            rr = dns.rrset.from_text(qname, 300, 'IN', 'TXT', text_val)
-                        else:
-                            rr = dns.rrset.from_text(qname, 300, 'IN', dns.rdatatype.to_text(qtype), answer_data)
-                        response.answer.append(rr)
+                        rdata_list = [dns.rdata.from_text(dns.rdataclass.IN, qtype, data) for data in answer_data]
+                for rdata in rdata_list:
+                    response.answer.append(dns.rrset.RRset(question.name, dns.rdataclass.IN, qtype))
+                    response.answer[-1].add(rdata)
 
-            # Set AA flag
-            response.flags |= (1 << 10)
+            # Set the response flags
+            response.flags |= 1 << 10
 
-            # Send the response
+            # Send the response back to the client using the `server_socket.sendto` method and put the response to_wire(), return to the addr you received from
+            print("Responding to request:", qname)
             server_socket.sendto(response.to_wire(), addr)
-
         except KeyboardInterrupt:
-            print('\nExiting... (KeyboardInterrupt)')
+            print('\nExiting...')
             server_socket.close()
             sys.exit(0)
-        except Exception as e:
-            # Keep server alive and print a helpful debug message
-            print("Error handling request:", repr(e))
-
 
 
 def run_dns_server_user():
