@@ -74,10 +74,8 @@ dns_records = {
             604800, #expire
             86400, #minimum
         ),
-    },
-   
+    },   
     # Add more records as needed (see assignment instructions!
-    },
     'safebank.com.': {
         dns.rdatatype.A: '192.168.1.102',
     },
